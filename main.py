@@ -1,4 +1,5 @@
 import os
+
 from dotenv import load_dotenv
 from google import genai
 
@@ -12,7 +13,19 @@ if api_key is None:
 client = genai.Client(api_key=api_key)
 
 # Prompt the model
-response = client.models.generate_content(
-    model='gemini-2.5-flash', contents="Why is Boot.dev such a great place to learn backend development? Use one paragraph maximum."
-)
-print(response.text)
+prompt = "Why is Boot.dev such a great place to learn backend development? Use one paragraph maximum."
+response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+
+# Makes sure the usage_metadata exists
+if response.usage_metadata is None:
+    raise RuntimeError("The API response appears malformed...")
+
+# Create variables of the prompt and response
+prompt_count = response.usage_metadata.prompt_token_count
+response_count = response.usage_metadata.candidates_token_count
+
+# Print those variables
+print(f"User prompt: {prompt}")
+print(f"Prompt tokens: {prompt_count}")
+print(f"Response tokens: {response_count}")
+print(f"Response:\n{response.text}")
