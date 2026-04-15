@@ -1,78 +1,160 @@
 import argparse
 import os
+import sys
 
 from dotenv import load_dotenv
 from google import genai
-from google.genai import types
-from functions.call_function import available_functions
+from google.genai import errors, types
+
+from functions.call_function import available_functions, call_function
 from prompts import system_prompt
 
 
 def main():
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="AI Code Assistant")
-    parser.add_argument("user_prompt", type=str,
-                        help="Prompt to send to Gemini")
-    parser.add_argument("--verbose", action="store_true",
-                        help="Enable verbose output")
+    parser.add_argument(
+        "user_prompt",
+        type=str,
+        help="Prompt to send to Gemini",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Enable verbose output",
+    )
     args = parser.parse_args()
 
-    # Load environment variables from .env
+    # Load environment variables from .env (for API key)
     load_dotenv()
 
     # Retrieve the Gemini API key
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
-        raise RuntimeError("No Gemini API key found!")
+        raise RuntimeError("No Gemini API key found. Set GEMINI_API_KEY first.")
 
     # Initialize the Gemini client
     client = genai.Client(api_key=api_key)
 
-    # Create the message list to send to the model
-    messages = [types.Content(
-        role="user", parts=[types.Part(text=args.user_prompt)])]
+    # Create the initial message list with the user's prompt
+    messages = [
+        types.Content(
+            role="user",
+            parts=[types.Part(text=args.user_prompt)],
+        )
+    ]
 
-    # Generate the response from the model
-    generate_content(client, messages, args.user_prompt, args.verbose)
+    # Start the generation process
+    return generate_content(client, messages, args.user_prompt, args.verbose)
+
+
+def is_quota_exhausted_error(error):
+    # Gemini quota errors can arrive as structured status data or only as text.
+    status = (error.status or "").upper()
+    message = (error.message or "").lower()
+    details = str(getattr(error, "details", "")).lower()
+
+    if status == "RESOURCE_EXHAUSTED":
+        return True
+
+    return "quota" in message or "quota" in details
+
+
+def build_api_error_message(error):
+    # Build one compact line so CLI failures stay readable without a traceback.
+    status = f" {error.status}" if error.status else ""
+    message = f": {error.message}" if error.message else ""
+    return f"Gemini API request failed ({error.code}{status}){message}"
+
+
+def print_quota_exhausted_message(error, verbose):
+    # Treat exhausted quota as an expected CLI condition, not a crash.
+    print(
+        "Gemini API quota is exhausted. Check billing/quota limits or wait for "
+        "your usage window to reset.",
+        file=sys.stderr,
+    )
+    if verbose and error.message:
+        print(f"Gemini details: {error.message}", file=sys.stderr)
 
 
 def generate_content(client, messages, user_prompt, verbose):
-    # Send the prompt to the Gemini model
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=messages,
-        config=types.GenerateContentConfig(
-            tools=[available_functions],
-            system_instruction=system_prompt,
-            temperature=0,  # Keep this line
-        ),
-    )
+    # Send the current conversation to Gemini
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=messages,
+            config=types.GenerateContentConfig(
+                tools=[available_functions],
+                system_instruction=system_prompt,
+                temperature=0,
+            ),
+        )
+    except errors.ClientError as error:
+        if is_quota_exhausted_error(error):
+            print_quota_exhausted_message(error, verbose)
+            return 1
+        raise RuntimeError(build_api_error_message(error)) from error
+    except errors.APIError as error:
+        raise RuntimeError(build_api_error_message(error)) from error
 
-    # Verify the response contains usage metadata
+    # Ensure the response is valid
     if response.usage_metadata is None:
         raise RuntimeError(
-            "The API response appears malformed, it probably failed!")
+            "The API response appears malformed, it probably failed!"
+        )
 
-    # Extract token usage information
+    # Extract token usage for debugging/monitoring
     prompt_tokens = response.usage_metadata.prompt_token_count
     response_tokens = response.usage_metadata.candidates_token_count
 
-    # Print additional debugging information if verbose mode is enabled
     if verbose:
         print(f"User prompt: {user_prompt}")
         print(f"Prompt tokens: {prompt_tokens}")
         print(f"Response tokens: {response_tokens}")
 
-    # Print every function call
+    # This will store the tool results we send back to the model later
+    function_response_parts = []
+
+    # Check if the model requested any function calls
     if response.function_calls is not None:
         for function_call in response.function_calls:
-            print(f"Calling function: {
-                  function_call.name}({function_call.args})")
+            # Execute the requested function using our dispatcher
+            function_call_result = call_function(function_call, verbose)
 
-    # Print the response text
+            # Validate that the function returned a proper Content object
+            if not function_call_result.parts:
+                raise RuntimeError("Function call returned no parts.")
+
+            # Extract the FunctionResponse object from the first part
+            function_response = function_call_result.parts[0].function_response
+            if function_response is None:
+                raise RuntimeError(
+                    "Function call result did not include a function response."
+                )
+
+            # Ensure the function actually returned data
+            if function_response.response is None:
+                raise RuntimeError(
+                    "Function response did not include a response payload."
+                )
+
+            # Store this part so we can send it back to Gemini later
+            function_response_parts.append(function_call_result.parts[0])
+
+            # Optional debug output showing what the function returned
+            if verbose:
+                print(f"-> {function_response.response}")
+
+    # Print the model's text response (may be None if only function calls were returned)
     print(f"Response:\n{response.text}")
+    return 0
 
 
-# Run the program
 if __name__ == "__main__":
-    main()
+    try:
+        raise SystemExit(main())
+    except RuntimeError as error:
+        # Keep expected CLI failures readable while still allowing real bugs through.
+        print(f"Error: {error}", file=sys.stderr)
+        raise SystemExit(1)
