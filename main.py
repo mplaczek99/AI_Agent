@@ -4,6 +4,7 @@ import os
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
+from functions.call_function import available_functions
 from prompts import system_prompt
 
 
@@ -38,8 +39,9 @@ def generate_content(client, messages, user_prompt, verbose):
         model="gemini-2.5-flash",
         contents=messages,
         config=types.GenerateContentConfig(
+            tools=[available_functions],
             system_instruction=system_prompt,
-            temperature=0,
+            temperature=0, # Keep this line
         ),
     )
 
@@ -57,7 +59,12 @@ def generate_content(client, messages, user_prompt, verbose):
         print(f"Prompt tokens: {prompt_tokens}")
         print(f"Response tokens: {response_tokens}")
 
-    # Print the model's response
+    # Print every function call
+    if response.function_calls is not None:
+        for function_call in response.function_calls:
+            print(f"Calling function: {function_call.name}({function_call.args})")
+
+    # Print the response text
     print(f"Response:\n{response.text}")
 
 
