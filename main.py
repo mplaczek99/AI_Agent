@@ -45,7 +45,7 @@ def main():
     ]
 
     # Start the generation process
-    return generate_content(client, messages, args.user_prompt, args.verbose)
+    generate_content(client, messages, args.user_prompt, args.verbose)
 
 
 def is_quota_exhausted_error(error):
@@ -58,24 +58,6 @@ def is_quota_exhausted_error(error):
         return True
 
     return "quota" in message or "quota" in details
-
-
-def build_api_error_message(error):
-    # Build one compact line so CLI failures stay readable without a traceback.
-    status = f" {error.status}" if error.status else ""
-    message = f": {error.message}" if error.message else ""
-    return f"Gemini API request failed ({error.code}{status}){message}"
-
-
-def print_quota_exhausted_message(error, verbose):
-    # Treat exhausted quota as an expected CLI condition, not a crash.
-    print(
-        "Gemini API quota is exhausted. Check billing/quota limits or wait for "
-        "your usage window to reset.",
-        file=sys.stderr,
-    )
-    if verbose and error.message:
-        print(f"Gemini details: {error.message}", file=sys.stderr)
 
 
 def generate_content(client, messages, user_prompt, verbose):
@@ -92,11 +74,16 @@ def generate_content(client, messages, user_prompt, verbose):
         )
     except errors.ClientError as error:
         if is_quota_exhausted_error(error):
-            print_quota_exhausted_message(error, verbose)
-            return 1
-        raise RuntimeError(build_api_error_message(error)) from error
-    except errors.APIError as error:
-        raise RuntimeError(build_api_error_message(error)) from error
+            # Print a clean CLI error when the account is out of quota.
+            print(
+                "Gemini API quota is exhausted. Check billing/quota limits or "
+                "wait for your usage window to reset.",
+                file=sys.stderr,
+            )
+            if verbose and error.message:
+                print(f"Gemini details: {error.message}", file=sys.stderr)
+            raise SystemExit(1)
+        raise RuntimeError(f"Gemini API request failed: {error}") from error
 
     # Ensure the response is valid
     if response.usage_metadata is None:
@@ -148,13 +135,7 @@ def generate_content(client, messages, user_prompt, verbose):
 
     # Print the model's text response (may be None if only function calls were returned)
     print(f"Response:\n{response.text}")
-    return 0
 
 
 if __name__ == "__main__":
-    try:
-        raise SystemExit(main())
-    except RuntimeError as error:
-        # Keep expected CLI failures readable while still allowing real bugs through.
-        print(f"Error: {error}", file=sys.stderr)
-        raise SystemExit(1)
+    main()
