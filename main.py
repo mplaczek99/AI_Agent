@@ -11,8 +11,10 @@ from prompts import system_prompt
 def main():
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="AI Code Assistant")
-    parser.add_argument("user_prompt", type=str, help="Prompt to send to Gemini")
-    parser.add_argument("--verbose", action="store_true", help="Enable verbose output")
+    parser.add_argument("user_prompt", type=str,
+                        help="Prompt to send to Gemini")
+    parser.add_argument("--verbose", action="store_true",
+                        help="Enable verbose output")
     args = parser.parse_args()
 
     # Load environment variables from .env
@@ -27,7 +29,8 @@ def main():
     client = genai.Client(api_key=api_key)
 
     # Create the message list to send to the model
-    messages = [types.Content(role="user", parts=[types.Part(text=args.user_prompt)])]
+    messages = [types.Content(
+        role="user", parts=[types.Part(text=args.user_prompt)])]
 
     # Generate the response from the model
     generate_content(client, messages, args.user_prompt, args.verbose)
@@ -41,13 +44,14 @@ def generate_content(client, messages, user_prompt, verbose):
         config=types.GenerateContentConfig(
             tools=[available_functions],
             system_instruction=system_prompt,
-            temperature=0, # Keep this line
+            temperature=0,  # Keep this line
         ),
     )
 
     # Verify the response contains usage metadata
     if response.usage_metadata is None:
-        raise RuntimeError("The API response appears malformed, it probably failed!")
+        raise RuntimeError(
+            "The API response appears malformed, it probably failed!")
 
     # Extract token usage information
     prompt_tokens = response.usage_metadata.prompt_token_count
@@ -62,7 +66,8 @@ def generate_content(client, messages, user_prompt, verbose):
     # Print every function call
     if response.function_calls is not None:
         for function_call in response.function_calls:
-            print(f"Calling function: {function_call.name}({function_call.args})")
+            print(f"Calling function: {
+                  function_call.name}({function_call.args})")
 
     # Print the response text
     print(f"Response:\n{response.text}")
